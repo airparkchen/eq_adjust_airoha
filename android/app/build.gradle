@@ -40,10 +40,11 @@ flutter {
 
 dependencies {
     // Airoha SDK依賴
-    implementation files('libs/libAirohaSDK-release.aar')
-    implementation files('libs/libLogger-release.aar')
-    implementation files('libs/libMgrPeq-release.aar')
-    implementation files('libs/libLinker-release.aar')
+    implementation fileTree(dir: 'libs', include: ['*.aar'])
+//    implementation files('libs/libAirohaSDK-release.aar')
+//    implementation files('libs/libLogger-release.aar')
+//    implementation files('libs/libMgrPeq-release.aar')
+//    implementation files('libs/libLinker-release.aar')
 
     // Airoha SDK可能需要的其他依賴
     implementation 'com.google.code.gson:gson:2.8.9'

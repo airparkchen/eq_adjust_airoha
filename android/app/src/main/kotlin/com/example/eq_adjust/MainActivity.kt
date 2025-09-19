@@ -1,27 +1,49 @@
 package com.example.eq_adjust
 
 import android.Manifest
+import android.annotation.SuppressLint
+import android.bluetooth.*
+import android.content.Context
 import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
+import android.os.ParcelUuid
+import android.util.Log
+import androidx.annotation.RequiresApi
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import java.util.*
 
 import com.airoha.sdk.AirohaSDK
 import com.airoha.sdk.AirohaConnector
 import com.airoha.sdk.api.control.AirohaDeviceControl
 import com.airoha.sdk.api.control.PEQControl
 import com.airoha.sdk.api.control.AirohaDeviceListener
+import com.airoha.sdk.api.device.AirohaDevice
+import com.airoha.sdk.api.device.ApiStrategy
 import com.airoha.sdk.api.message.AirohaBaseMsg
 import com.airoha.sdk.api.message.AirohaEQPayload
 import com.airoha.sdk.api.message.AirohaEQSettings
 import com.airoha.sdk.api.message.AirohaAdaptiveEqInfo
 import com.airoha.sdk.api.utils.AirohaStatusCode
-import com.airoha.sdk.api.utils.AirohaEQBandType
+import com.airoha.sdk.api.utils.ConnectionProtocol
+import com.airoha.sdk.api.utils.ConnectionUUID
 import java.util.LinkedList
 
+// 新增：實作ApiStrategy（基於demo app的TestDeviceStrategy）
+class TestDeviceStrategy : ApiStrategy() {
+    // 這個類別通常包含裝置特定的策略邏輯
+    // 暫時使用空實作，如果需要特定邏輯再補充
+}
+
+@SuppressLint("MissingPermission")
 class MainActivity: FlutterActivity() {
     private val CHANNEL_SDK = "airoha_sdk"
     private val CHANNEL_EQ = "airoha_eq"
@@ -33,6 +55,14 @@ class MainActivity: FlutterActivity() {
     private var deviceControl: AirohaDeviceControl? = null
     private var eqControl: PEQControl? = null
     private var methodChannel: MethodChannel? = null
+
+    // 藍牙相關變數（基於DeviceSearchPresenter）
+    private val SPP_UUID = "00000000-0000-0000-0099-AABBCCDDEEFF"
+    private var bluetoothAdapter: BluetoothAdapter? = null
+    private var bluetoothA2dp: BluetoothA2dp? = null
+    private var bluetoothLeAudio: BluetoothLeAudio? = null
+    private var isConnected = false
+    private var isChecking = false
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -91,6 +121,7 @@ class MainActivity: FlutterActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         requestPermissions()
+        initializeBluetooth()
     }
 
     private fun requestPermissions() {
@@ -117,6 +148,45 @@ class MainActivity: FlutterActivity() {
         }
     }
 
+    // 初始化藍牙（基於DeviceSearchPresenter）
+    private fun initializeBluetooth() {
+        val bluetoothManager = getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
+        bluetoothAdapter = bluetoothManager.adapter
+
+        // 設定A2DP Profile監聽器
+        bluetoothAdapter?.getProfileProxy(this, object : BluetoothProfile.ServiceListener {
+            override fun onServiceConnected(profile: Int, proxy: BluetoothProfile?) {
+                if (profile == BluetoothProfile.A2DP) {
+                    bluetoothA2dp = proxy as BluetoothA2dp
+                }
+            }
+
+            override fun onServiceDisconnected(profile: Int) {
+                if (profile == BluetoothProfile.A2DP) {
+                    bluetoothA2dp = null
+                }
+            }
+        }, BluetoothProfile.A2DP)
+
+        // 設定LEA Profile監聽器 (Android 13+)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            bluetoothAdapter?.getProfileProxy(this, object : BluetoothProfile.ServiceListener {
+                @RequiresApi(Build.VERSION_CODES.TIRAMISU)
+                override fun onServiceConnected(profile: Int, proxy: BluetoothProfile?) {
+                    if (profile == BluetoothProfile.LE_AUDIO) {
+                        bluetoothLeAudio = proxy as BluetoothLeAudio
+                    }
+                }
+
+                override fun onServiceDisconnected(profile: Int) {
+                    if (profile == BluetoothProfile.LE_AUDIO) {
+                        bluetoothLeAudio = null
+                    }
+                }
+            }, BluetoothProfile.LE_AUDIO)
+        }
+    }
+
     private fun initSDK(result: MethodChannel.Result) {
         try {
             airohaSDK = AirohaSDK.getInst()
@@ -131,7 +201,7 @@ class MainActivity: FlutterActivity() {
         }
     }
 
-    // 測試用連接部份，但實際沒連接
+    // 基於DeviceSearchPresenter.connectBoundDevice()的實作
     private fun connectBoundDevice(result: MethodChannel.Result) {
         try {
             airohaConnector?.let { connector ->
@@ -139,16 +209,64 @@ class MainActivity: FlutterActivity() {
                 connector.registerConnectionListener(object : AirohaConnector.AirohaConnectionListener {
                     override fun onStatusChanged(status: Int) {
                         runOnUiThread {
-                            methodChannel?.invokeMethod("onStatusChanged", mapOf("status" to status))
+                            Log.d("MainActivity", "連接狀態變更: $status")
+
+                            // 記錄所有狀態碼以便除錯
+                            val statusText = when (status) {
+                                1012 -> "CONNECTED"  // 實際的連接成功狀態
+                                1011 -> "CONNECTING" // 實際的連接中狀態
+                                AirohaConnector.DISCONNECTED -> "DISCONNECTED"
+                                AirohaConnector.CONNECTION_ERROR -> "CONNECTION_ERROR"
+                                AirohaConnector.INITIALIZATION_FAILED -> "INITIALIZATION_FAILED"
+                                AirohaConnector.WAITING_CONNECTABLE -> "WAITING_CONNECTABLE"
+                                AirohaConnector.DISCONNECTING -> "DISCONNECTING"
+                                else -> "UNKNOWN_STATUS_$status"
+                            }
+                            Log.d("MainActivity", "狀態說明: $statusText")
+
+                            when (status) {
+                                1012 -> { // 實際的CONNECTED狀態
+                                    isConnected = true
+                                    Log.d("MainActivity", "✓ 連接成功!")
+                                    methodChannel?.invokeMethod("onStatusChanged", mapOf("status" to status))
+                                }
+                                AirohaConnector.DISCONNECTED -> {
+                                    isConnected = false
+                                    Log.d("MainActivity", "✗ 連接已斷開")
+                                    methodChannel?.invokeMethod("onStatusChanged", mapOf("status" to status))
+                                }
+                                AirohaConnector.CONNECTION_ERROR -> {
+                                    isConnected = false
+                                    Log.e("MainActivity", "✗ 連接錯誤")
+                                }
+                                AirohaConnector.INITIALIZATION_FAILED -> {
+                                    isConnected = false
+                                    Log.e("MainActivity", "✗ 初始化失敗")
+                                }
+                                1011 -> { // 實際的CONNECTING狀態
+                                    Log.d("MainActivity", "⏳ 正在連接...")
+                                }
+                                AirohaConnector.WAITING_CONNECTABLE -> {
+                                    Log.d("MainActivity", "⏳ 等待可連接...")
+                                }
+                                AirohaConnector.DISCONNECTING -> {
+                                    Log.d("MainActivity", "⏳ 正在斷開...")
+                                }
+                                else -> {
+                                    Log.w("MainActivity", "⚠ 未知狀態碼: $status")
+                                }
+                            }
                         }
                     }
 
                     override fun onDataReceived(msg: AirohaBaseMsg) {
-                        // 處理接收到的數據
+                        Log.d("MainActivity", "收到數據: ${msg.javaClass.simpleName}")
                     }
                 })
 
-                result.success(true)
+                // 開始檢查已配對裝置（基於DeviceSearchPresenter邏輯）
+                startDeviceCheck(result)
+
             } ?: run {
                 result.error("CONNECT_ERROR", "SDK未初始化", null)
             }
@@ -157,8 +275,151 @@ class MainActivity: FlutterActivity() {
         }
     }
 
+    // 基於DeviceSearchPresenter.checkBondDevice()的實作
+    private fun startDeviceCheck(result: MethodChannel.Result) {
+        isChecking = true
+
+        CoroutineScope(Dispatchers.IO).launch {
+            var attempts = 0
+            val maxAttempts = 60 // 30秒超時
+
+            while (isChecking && attempts < maxAttempts) {
+                attempts++
+                Log.d("MainActivity", "檢查裝置，嘗試次數: $attempts")
+
+                if (findAndConnectDevice()) {
+                    runOnUiThread {
+                        result.success(true)
+                    }
+                    break
+                }
+
+                delay(500)
+            }
+
+            if (attempts >= maxAttempts && !isConnected) {
+                runOnUiThread {
+                    result.error("TIMEOUT", "連接超時", null)
+                }
+            }
+
+            isChecking = false
+        }
+    }
+
+    // 基於DeviceSearchPresenter.findConnectedDevice()的實作
+    private fun findAndConnectDevice(): Boolean {
+        bluetoothAdapter?.let { adapter ->
+            if (!adapter.isEnabled || adapter.state != BluetoothAdapter.STATE_ON) {
+                return false
+            }
+
+            val bondedDevices = adapter.bondedDevices
+            Log.d("MainActivity", "已配對裝置數量: ${bondedDevices.size}")
+
+            for (device in bondedDevices) {
+                Log.d("MainActivity", "檢查裝置: ${device.name}, ${device.address}")
+
+                // 檢查是否為Airoha裝置且已連接A2DP
+                if (isAirohaDevice(device) && isA2dpConnected(device.address)) {
+                    Log.d("MainActivity", "找到Airoha A2DP裝置: ${device.name}")
+                    connectClassicDevice(device)
+                    return true
+                }
+                // 檢查LEA連接 (Android 13+)
+                else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && isLeaConnected(device.address)) {
+                    Log.d("MainActivity", "找到Airoha LEA裝置: ${device.name}")
+                    connectLeaDevice(device)
+                    return true
+                }
+            }
+        }
+        return false
+    }
+
+    // 基於DeviceSearchPresenter.isAirohaDevice()的實作
+    private fun isAirohaDevice(device: BluetoothDevice): Boolean {
+        val uuids = device.uuids
+        if (uuids == null) return false
+
+        for (uuid in uuids) {
+            if (uuid.uuid.toString().uppercase() == SPP_UUID) {
+                return true
+            }
+        }
+        return false
+    }
+
+    // 基於DeviceSearchPresenter.isA2dpConnected()的實作
+    private fun isA2dpConnected(address: String): Boolean {
+        bluetoothA2dp?.let { a2dp ->
+            val device = bluetoothAdapter?.getRemoteDevice(address)
+            device?.let {
+                return a2dp.getConnectionState(it) == BluetoothProfile.STATE_CONNECTED
+            }
+        }
+        return false
+    }
+
+    // 基於DeviceSearchPresenter.isLEAConnected()的實作
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
+    private fun isLeaConnected(address: String): Boolean {
+        bluetoothLeAudio?.let { lea ->
+            val device = bluetoothAdapter?.getRemoteDevice(address)
+            device?.let {
+                return lea.getConnectionState(it) == BluetoothProfile.STATE_CONNECTED
+            }
+        }
+        return false
+    }
+
+    // 基於DeviceSearchPresenter.connectClassicDevice()的實作
+    private fun connectClassicDevice(bluetoothDevice: BluetoothDevice) {
+        Log.d("MainActivity", "開始連接Classic裝置: ${bluetoothDevice.name}, ${bluetoothDevice.address}")
+
+        val airohaDevice = AirohaDevice()
+        airohaDevice.setApiStrategy(TestDeviceStrategy())
+        airohaDevice.setTargetAddr(bluetoothDevice.address)
+        airohaDevice.setDeviceName(bluetoothDevice.name)
+        airohaDevice.setPreferredProtocol(ConnectionProtocol.PROTOCOL_SPP)
+
+        Log.d("MainActivity", "AirohaDevice設定完成 - MAC: ${bluetoothDevice.address}, 協定: SPP")
+
+        try {
+            val connectionUUID = ConnectionUUID(UUID.fromString(SPP_UUID))
+            Log.d("MainActivity", "開始呼叫SDK connect方法...")
+            airohaConnector?.connect(airohaDevice, connectionUUID)
+            Log.d("MainActivity", "SDK connect方法已呼叫")
+        } catch (e: Exception) {
+            Log.e("MainActivity", "連接過程發生錯誤: ${e.message}", e)
+        }
+    }
+
+    // 基於DeviceSearchPresenter.connectLEADevice()的實作
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
+    private fun connectLeaDevice(bluetoothDevice: BluetoothDevice) {
+        Log.d("MainActivity", "開始連接LEA裝置: ${bluetoothDevice.name}, ${bluetoothDevice.address}")
+
+        val airohaDevice = AirohaDevice()
+        airohaDevice.setApiStrategy(TestDeviceStrategy())
+        airohaDevice.setTargetAddr(bluetoothDevice.address)
+        airohaDevice.setDeviceName(bluetoothDevice.name)
+        airohaDevice.setPreferredProtocol(ConnectionProtocol.PROTOCOL_LEA)
+
+        Log.d("MainActivity", "AirohaDevice設定完成 - MAC: ${bluetoothDevice.address}, 協定: LEA")
+
+        try {
+            Log.d("MainActivity", "開始呼叫SDK connect方法...")
+            airohaConnector?.connect(airohaDevice)
+            Log.d("MainActivity", "SDK connect方法已呼叫")
+        } catch (e: Exception) {
+            Log.e("MainActivity", "連接過程發生錯誤: ${e.message}", e)
+        }
+    }
+
     private fun disconnect(result: MethodChannel.Result) {
         try {
+            isChecking = false
             airohaConnector?.disconnect()
             result.success(null)
         } catch (e: Exception) {
@@ -166,6 +427,7 @@ class MainActivity: FlutterActivity() {
         }
     }
 
+    // EQ相關方法保持不變
     private fun getAdaptiveEqDetectionStatus(result: MethodChannel.Result) {
         try {
             deviceControl?.getAdaptiveEqDetectionStatus(object : AirohaDeviceListener {
@@ -173,7 +435,6 @@ class MainActivity: FlutterActivity() {
                     runOnUiThread {
                         if (code == AirohaStatusCode.STATUS_SUCCESS) {
                             val status = msg.msgContent as Int
-                            // 根據API文檔：0-Freeze, 1-Enable, 2-Disable
                             result.success(status == 1)
                         } else {
                             result.error("GET_STATUS_ERROR", code.description, null)
@@ -190,7 +451,6 @@ class MainActivity: FlutterActivity() {
 
     private fun setAdaptiveEqDetectionStatus(status: Int, result: MethodChannel.Result) {
         try {
-            // 根據API文檔：1-Enable, 2-Disable
             deviceControl?.setAdaptiveEqDetectionStatus(status, object : AirohaDeviceListener {
                 override fun onRead(code: AirohaStatusCode, msg: AirohaBaseMsg) {}
 
@@ -260,7 +520,7 @@ class MainActivity: FlutterActivity() {
                                     settingMap["eqPayload"] = mapOf(
                                         "iirParams" to iirParamsList,
                                         "allSampleRates" to payload.allSampleRates.toList(),
-                                        "bandCount" to payload.bandCount.toInt()  // bandCount是float，轉為int
+                                        "bandCount" to payload.bandCount.toInt()
                                     )
                                 }
 
@@ -290,13 +550,11 @@ class MainActivity: FlutterActivity() {
         result: MethodChannel.Result
     ) {
         try {
-            // 基於API文檔創建EQ Payload
             val eqPayload = AirohaEQPayload()
             eqPayload.setAllSampleRates(allSampleRates.toIntArray())
-            eqPayload.setBandCount(bandCount.toFloat())  // setBandCount需要float參數
+            eqPayload.setBandCount(bandCount.toFloat())
             eqPayload.setIndex(categoryId)
 
-            // 創建IIR參數列表
             val params = LinkedList<AirohaEQPayload.EQIDParam>()
             for (param in iirParams) {
                 val bandInfo = AirohaEQPayload.EQIDParam()
@@ -308,7 +566,6 @@ class MainActivity: FlutterActivity() {
             }
             eqPayload.setIirParams(params)
 
-            // 呼叫API設定EQ
             eqControl?.setEQSetting(categoryId, eqPayload, saveOrNot, object : AirohaDeviceListener {
                 override fun onRead(code: AirohaStatusCode, msg: AirohaBaseMsg) {}
 

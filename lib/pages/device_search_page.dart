@@ -1,10 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:eq_adjust/services/airoha_connector.dart';
-import 'package:eq_adjust/pages/eq_page.dart';
+import 'package:eq_adjust/pages//eq_page.dart';
 import 'package:eq_adjust/pages/welcome_page.dart';
 
 class DeviceSearchPage extends StatefulWidget {
-  const DeviceSearchPage({super.key});
+  const DeviceSearchPage({Key? key}) : super(key: key);
 
   @override
   _DeviceSearchPageState createState() => _DeviceSearchPageState();
@@ -31,22 +31,32 @@ class _DeviceSearchPageState extends State<DeviceSearchPage> {
   // 設定連接監聽器（對應demo app的registerConnectionListener）
   void _setupConnectionListener() {
     _connector.registerConnectionListener((int status) {
+      print('Flutter收到狀態變更: $status');
       switch (status) {
-        case AirohaConnector.CONNECTED:
+        case 1012: // 實際的CONNECTED狀態
+          print('連接成功，跳轉到EQ頁面');
           _gotoEqualizerPage();
           break;
-        case AirohaConnector.CONNECTED_WRONG_ROLE:
-          setState(() {
-            _isConnectedWrongRole = true;
-          });
-          break;
-        case AirohaConnector.DISCONNECTED:
+        case 0: // AirohaConnector.DISCONNECTED
+          print('連接斷開，返回歡迎頁面');
           if (!_isConnectedWrongRole) {
             _gotoWelcomePage();
           }
           setState(() {
             _isConnectedWrongRole = false;
           });
+          break;
+        case 4: // AirohaConnector.CONNECTED_WRONG_ROLE (如果這個常數存在)
+          print('連接錯誤角色');
+          setState(() {
+            _isConnectedWrongRole = true;
+          });
+          break;
+        case 1011: // 實際的CONNECTING狀態
+          print('正在連接中...');
+          break;
+        default:
+          print('未處理的狀態: $status');
           break;
       }
     });
@@ -131,7 +141,7 @@ class _DeviceSearchPageState extends State<DeviceSearchPage> {
             const SizedBox(height: 30),
 
             // 圓形進度條（對應demo app的progressBarHA）
-            SizedBox(
+            Container(
               width: 80,
               height: 80,
               child: CircularProgressIndicator(

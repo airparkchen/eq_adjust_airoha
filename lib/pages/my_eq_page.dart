@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
-import 'package:eq_adjust/eq_control.dart';
+import 'package:eq_adjust/services/airoha_eq_control.dart';
 
 class MyEqPage extends StatefulWidget {
-  const MyEqPage({Key? key}) : super(key: key);
+  const MyEqPage({super.key});
 
   @override
   _MyEqPageState createState() => _MyEqPageState();
@@ -36,7 +36,7 @@ class _MyEqPageState extends State<MyEqPage> {
                   _gains[i] = (iirParams[i]['gainValue'] as num).toDouble().clamp(-12.0, 12.0);
                   _freqs[i] = (iirParams[i]['frequency'] as num).toDouble();
                 }
-                _isSupportLDAC = sampleRates.contains(88200) && sampleRates.contains(96000);
+                _isSupportLDAC = _isSupportLDACBySampleRates(sampleRates);
               });
             }
             break;
@@ -46,25 +46,51 @@ class _MyEqPageState extends State<MyEqPage> {
     }
   }
 
+  // 對應demo app的isSupportLDAC方法
+  bool _isSupportLDACBySampleRates(List<int> sampleRates) {
+    bool contains44100 = false;
+    bool contains48000 = false;
+    bool contains88200 = false;
+    bool contains96000 = false;
+
+    for (int rate in sampleRates) {
+      if (rate == 44100) {
+        contains44100 = true;
+      } else if (rate == 48000) contains48000 = true;
+      else if (rate == 88200) contains88200 = true;
+      else if (rate == 96000) contains96000 = true;
+    }
+
+    return contains44100 && contains48000 && contains88200 && contains96000;
+  }
+
   void _setEqSettings({required bool save}) async {
     List<Map<String, dynamic>> iirParams = [];
     for (int i = 0; i < 10; i++) {
       iirParams.add({
-        'bandType': 2, // BAND_PASS
+        'bandType': 2, // BAND_PASS (對應demo app的AirohaEQBandType.BAND_PASS.getValue())
         'frequency': _freqs[i],
         'gainValue': _gains[i],
         'qValue': 2.0,
       });
     }
 
-    final List<int> allSampleRates = _isSupportLDAC ? [44100, 48000, 88200, 96000] : [44100, 48000];
+    final List<int> allSampleRates = _isSupportLDAC
+        ? [44100, 48000, 88200, 96000]
+        : [44100, 48000];
 
-    await AirohaEqControl.setEqSetting(
-      categoryId: 101,
+    final success = await AirohaEqControl.setEqSetting(
+      categoryId: 101, // 對應demo app的My-EQ ID
       iirParams: iirParams,
       allSampleRates: allSampleRates,
       saveOrNot: save,
     );
+
+    if (!success) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('設定EQ失敗')),
+      );
+    }
   }
 
   @override
@@ -108,7 +134,7 @@ class _MyEqPageState extends State<MyEqPage> {
       padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
       child: Row(
         children: [
-          const Icon(Icons.adaptive_audio, color: Colors.red),
+          const Icon(Icons.high_quality, color: Colors.red),
           const SizedBox(width: 10),
           const Text('LDAC', style: TextStyle(fontSize: 16)),
           const Spacer(),
@@ -130,9 +156,9 @@ class _MyEqPageState extends State<MyEqPage> {
   Widget _buildEqSlider(int index) {
     String freqText;
     if (_freqs[index] >= 1000) {
-      freqText = '${(_freqs[index] / 1000).toInt()}k Hz';
+      freqText = '${(_freqs[index] / 1000).toInt()}kHz';
     } else {
-      freqText = '${_freqs[index].toInt()} Hz';
+      freqText = '${_freqs[index].toInt()}Hz';
     }
 
     return Padding(
@@ -158,8 +184,8 @@ class _MyEqPageState extends State<MyEqPage> {
               ),
               child: Slider(
                 value: _gains[index],
-                min: -12, // Corresponds to GAIN_MIN
-                max: 12,  // Corresponds to GAIN_MAX
+                min: -12, // 對應demo app的GAIN_MIN
+                max: 12,  // 對應demo app的GAIN_MAX
                 divisions: 24,
                 onChanged: (double value) {
                   setState(() {

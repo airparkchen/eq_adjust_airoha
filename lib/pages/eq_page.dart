@@ -1,15 +1,18 @@
 import 'package:flutter/material.dart';
-import 'package:eq_adjust/my_eq_page.dart';
-import 'package:eq_adjust/eq_control.dart';
+import 'package:eq_adjust/pages/my_eq_page.dart';
+import 'package:eq_adjust/services/airoha_eq_control.dart';
+import 'package:eq_adjust/services/airoha_connector.dart';
+import 'package:eq_adjust/pages/welcome_page.dart';
 
 class EqualizerPage extends StatefulWidget {
-  const EqualizerPage({Key? key}) : super(key: key);
+  const EqualizerPage({super.key});
 
   @override
   _EqualizerPageState createState() => _EqualizerPageState();
 }
 
 class _EqualizerPageState extends State<EqualizerPage> {
+  final AirohaConnector _connector = AirohaConnector();
   bool _isAdaptiveEQon = false;
   String _leftIndex = 'NA';
   String _rightIndex = 'NA';
@@ -17,7 +20,30 @@ class _EqualizerPageState extends State<EqualizerPage> {
   @override
   void initState() {
     super.initState();
+    _setupDisconnectionListener();
     _fetchAdaptiveEqStatus();
+  }
+
+  @override
+  void dispose() {
+    _connector.unregisterConnectionListener();
+    super.dispose();
+  }
+
+  // 設定斷線監聽器
+  void _setupDisconnectionListener() {
+    _connector.registerConnectionListener((int status) {
+      if (status == AirohaConnector.DISCONNECTED) {
+        _gotoWelcomePage();
+      }
+    });
+  }
+
+  // 返回歡迎頁面
+  void _gotoWelcomePage() {
+    Navigator.of(context).pushReplacement(
+      MaterialPageRoute(builder: (context) => const WelcomePage()),
+    );
   }
 
   Future<void> _fetchAdaptiveEqStatus() async {
@@ -37,6 +63,12 @@ class _EqualizerPageState extends State<EqualizerPage> {
     }
   }
 
+  // 斷開連接並返回
+  Future<void> _disconnectAndGoBack() async {
+    await _connector.disconnect();
+    _gotoWelcomePage();
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -46,12 +78,19 @@ class _EqualizerPageState extends State<EqualizerPage> {
         backgroundColor: const Color(0xFFEFEFEF),
         elevation: 0,
         centerTitle: true,
+        // 修改：添加斷開連接的返回按鈕
+        leading: IconButton(
+          icon: const Icon(Icons.arrow_back),
+          onPressed: _disconnectAndGoBack,
+        ),
       ),
       body: SingleChildScrollView(
         child: Padding(
           padding: const EdgeInsets.all(10.0),
           child: Column(
             children: [
+              // 新增：連接狀態顯示
+              _buildConnectionStatusTile(),
               _buildAdaptiveEqTile(context),
               _buildEqIndexTile(Icons.earbuds, 'Adaptive EQ Index (L)', _leftIndex),
               _buildEqIndexTile(Icons.earbuds_sharp, 'Adaptive EQ Index (R)', _rightIndex),
@@ -64,13 +103,34 @@ class _EqualizerPageState extends State<EqualizerPage> {
     );
   }
 
+  // 新增：連接狀態顯示元件
+  Widget _buildConnectionStatusTile() {
+    return Container(
+      color: const Color(0xFFE9E9E9),
+      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+      margin: const EdgeInsets.only(bottom: 5),
+      child: Row(
+        children: [
+          const Icon(Icons.bluetooth_connected, color: Colors.green),
+          const SizedBox(width: 10),
+          const Text('裝置已連接', style: TextStyle(fontSize: 16)),
+          const Spacer(),
+          TextButton(
+            onPressed: _disconnectAndGoBack,
+            child: const Text('斷開', style: TextStyle(color: Colors.red)),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildAdaptiveEqTile(BuildContext context) {
     return Container(
       color: const Color(0xFFE9E9E9),
       padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
       child: Row(
         children: [
-          const Icon(Icons.adaptive_audio, color: Colors.red),
+          const Icon(Icons.graphic_eq, color: Colors.red),
           const SizedBox(width: 10),
           const Text('Adaptive EQ', style: TextStyle(fontSize: 16)),
           const Spacer(),
@@ -83,7 +143,9 @@ class _EqualizerPageState extends State<EqualizerPage> {
                   _isAdaptiveEQon = value;
                 });
               } else {
-                // You can add a Snackbar or dialog to show error
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('設定失敗')),
+                );
               }
             },
             activeColor: Colors.orange,
@@ -112,13 +174,15 @@ class _EqualizerPageState extends State<EqualizerPage> {
   Widget _buildMyEqTile(BuildContext context) {
     return InkWell(
       onTap: () {
-        Navigator.of(context).push(MaterialPageRoute(builder: (context) => const MyEqPage()));
+        Navigator.of(context).push(
+            MaterialPageRoute(builder: (context) => const MyEqPage())
+        );
       },
       child: Container(
         color: const Color(0xFFE9E9E9),
         padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
-        child: Row(
-          children: const [
+        child: const Row(
+          children: [
             Icon(Icons.tune, color: Colors.green),
             SizedBox(width: 10),
             Text('My EQ', style: TextStyle(fontSize: 16)),
